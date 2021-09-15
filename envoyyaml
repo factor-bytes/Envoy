@@ -1,0 +1,117 @@
+
+1. Install Envoy.
+2. Create a Yaml file for creating the proxy. Sample code is below
+
+
+###################Envoy.yaml###########################
+
+static_resources:
+  listeners:
+  - address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 8443
+    filter_chains:
+    - filters:
+      - name: envoy.https_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: backend
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/health" }
+                route: { cluster: service_kc, regex_rewrite: {pattern: {"google_re2":{},"regex":"/health(.*)"}, substitution: '/' }}
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: service_kc
+          http_filters:
+           - name: envoy.filters.http.jwt_authn
+             typed_config: 
+               "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+               providers:
+                 jwt_provider:
+                   issuer: https://issuer.com
+                   audiences:
+                     audience in the JWT
+                   remote_jwks:
+                    http_uri: 
+                      uri: https://URIforkeys
+                      cluster: identity_provider
+                      timeout: 5s
+                    cache_duration:
+                      seconds: 300
+               rules:
+                 # No jwt verification is required for /health path(ByPass JWT)
+                 - match: 
+                    prefix: /health
+
+                 #verify all  required for /health path
+                 - match: { prefix: / }
+                   requires:
+                     provider_name: jwt_provider
+               bypass_cors_preflight: "true"
+            - name: envoy.filters.http.lua
+             typed_config:
+               "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+               inline_code: |
+                 function envoy_on_response(response_handle)
+                   response_handle:headers():add("Content-Security-Policy", "default-src 'self' 'unsafe-eval' 'unsafe-inline' *.domain.com; script-src ‘self’ ‘unsafe-inline’ ‘unsafe-eval’; img-src 'self' *.domain.com data: connect-src ‘self’ *.domain.com")
+                   response_handle:headers():add("Cache-Control", "no-store")
+                   response_handle:headers():add("X-Frame-Options", "SAMEORIGIN")
+                   response_handle:headers():add("X-Content-Type-Options", "nosniff")
+                   response_handle:headers():add("Strict-Transport-Security", "max-age=31536000;includeSubDomains")
+                   response_handle:headers():add("X-XSS-Protection", "1; mode=block")
+                 end
+           - name: envoy.router
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context:
+            tls_certificates:
+              - certificate_chain: { filename: "cert file path e.g /home/appuser/certfile" }
+                private_key: { filename: "private key path e.g /home/appuser/privatekey" }
+                password: { inline_string: "password" }
+            validation_context:
+              trusted_ca: { filename: certfilepathnoquotes }
+  clusters:
+  - name: service_kc
+    connect_timeout: 2s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: service_kc
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 8080
+  - name: identity_provider
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    load_assignment:
+      cluster_name: identity_provider
+      endpoints:
+        - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: providerd domain e.g. login.microsoftonline.com
+                    port_value: 443
+    transport_socket:
+      name: envoy.transport_sockets.tls      
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext  
+
+
+###################################################################################################
+
+
+3. start envoy "envoy -c /path/to/envoy.yaml &"
