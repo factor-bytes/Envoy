@@ -1,4 +1,4 @@
-# Using Envoy as frontend proxy
+# Using Envoy as proxy
 
 - Setting up Envoy
 - Creating envoy proxy
